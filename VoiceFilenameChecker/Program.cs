@@ -1,10 +1,10 @@
 using System.Diagnostics;
 using System.Text.RegularExpressions;
 using Mutagen.Bethesda;
+using Mutagen.Bethesda.Environments;
 using Mutagen.Bethesda.Plugins;
 using Mutagen.Bethesda.Plugins.Cache;
 using Mutagen.Bethesda.Skyrim;
-using Mutagen.Bethesda.Synthesis;
 
 namespace VoiceFilenameChecker;
 
@@ -69,15 +69,6 @@ public partial class Program
             yield return Path.GetRelativePath(baseDir, file);
     }
 
-    public static async Task<int> Main(string[] args)
-    {
-        // TODO: Use Mutagen on its own
-        return await SynthesisPipeline.Instance
-            .AddPatch<ISkyrimMod, ISkyrimModGetter>(RunPatch)
-            .SetTypicalOpen(GameRelease.SkyrimSE, "YourPatcher.esp")
-            .Run(args);
-    }
-
     static bool Check(string path, Response? response, ILinkCache linkCache)
     {
         bool ok = true;
@@ -133,15 +124,18 @@ public partial class Program
         return ok;
     }
 
-    public static void RunPatch(IPatcherState<ISkyrimMod, ISkyrimModGetter> state)
+    public static void Main()
     {
-        var voiceDir = Path.Join(state.DataFolderPath, "Sound/Voice");
+        using var env = GameEnvironment.Typical.Builder<ISkyrimMod, ISkyrimModGetter>(GameRelease.SkyrimSE)
+            .Build();
+
+        var voiceDir = Path.Join(env.DataFolderPath, "Sound/Voice");
 
         uint good = 0;
         uint bad = 0;
         foreach (var file in WalkDirectory(voiceDir, voiceDir))
         {
-            var ok = Check(file, Response.ParseFileName(file), state.LinkCache);
+            var ok = Check(file, Response.ParseFileName(file), env.LinkCache);
             if (ok)
                 good++;
             else
