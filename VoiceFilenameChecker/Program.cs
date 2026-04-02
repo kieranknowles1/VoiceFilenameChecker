@@ -93,6 +93,8 @@ public partial class Program
 
         var topic = responses.Parent?.Record as IDialogTopicGetter;
         Debug.Assert(topic != null);
+        // ResolveContext doesn't account for editor ID changes
+        topic = linkCache.Resolve<IDialogTopicGetter>(topic.FormKey);
 
         if (topic.EditorID != null && response.Topic != null)
         {
