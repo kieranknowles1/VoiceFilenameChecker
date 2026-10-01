@@ -26,6 +26,13 @@ public partial class Program
     static readonly HashSet<string> RevoicedQuests = [
         "CYRBrumaWatchtowersFF01",
         "CYRDialogueBrumaWatchtowers",
+        "CYRDialogueSnowstoneRestHarsvarCaught",
+
+        // New guards
+        "CYRBrumaFF05",
+        "CYRDialogueBrumaSceneArmionGC1",
+        "CYRDialogueBrumaSceneArmionGC2",
+        "CYRDialogueBrumaSceneArmionGC3",
     ];
 
     static bool Ignored(string path, IDialogResponsesGetter response, IDialogTopicGetter topic, string quest)
@@ -40,13 +47,17 @@ public partial class Program
         if (RevoicedQuests.Contains(quest))
             return true;
 
+        // Cut NPC - CYRHarsvar
+        if (response.Conditions.Any(c => c.Data is IGetIsIDConditionDataGetter gisid && gisid.Object.Link.Equals(FormKey.Factory("078185:BSHeartland.esm"))))
+            return true;
+
         return false;
     }
 
     public static void Main()
     {
         using var output = new StreamWriter(File.OpenWrite(@"C:\Users\justl\Documents\Missing Voices Report\voices.csv"));
-        output.WriteLine("Path,Quest,FormId,Text");
+        output.WriteLine("Path,Quest,FormId,Text,Speakers");
 
         using var env = GameEnvironment.Typical.Builder<ISkyrimMod, ISkyrimModGetter>(GameRelease.SkyrimSE)
             .Build();
@@ -70,7 +81,7 @@ public partial class Program
                 {
                     var id = $"09{response.FormKey.ID:X6}";
                     var text = string.Join(" ", response.Responses.Select(r => r.Text.String)!);
-                    output.WriteLine($"{file},{quest},{id},\"{text}\"");
+                    output.WriteLine($"{file},{quest},{id},\"{text}\",{speakers}");
                 }
             }
         };
