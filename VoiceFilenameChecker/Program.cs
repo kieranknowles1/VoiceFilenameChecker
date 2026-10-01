@@ -6,6 +6,8 @@ using Mutagen.Bethesda.Environments;
 using Mutagen.Bethesda.Plugins;
 using Mutagen.Bethesda.Plugins.Assets;
 using Mutagen.Bethesda.Plugins.Cache;
+using Mutagen.Bethesda.Plugins.Cache.Internals.Implementations;
+using Mutagen.Bethesda.Plugins.Order;
 using Mutagen.Bethesda.Skyrim;
 using Mutagen.Bethesda.Skyrim.Records.Assets.VoiceType;
 using Noggog;
@@ -15,6 +17,7 @@ namespace VoiceFilenameChecker;
 public partial class Program
 {
     static readonly ModKey Mod = "BSHeartland.esm";
+    static readonly string DataFolderPath = @"C:\Users\justl\AppData\Local\ModOrganizer\Skyrim Special Edition\mods\se-heartlands-bruma";
 
     static readonly string[] CutVoices = [
         "CYRR01FemaleOrc",
@@ -33,6 +36,7 @@ public partial class Program
         "CYRDialogueBrumaSceneArmionGC1",
         "CYRDialogueBrumaSceneArmionGC2",
         "CYRDialogueBrumaSceneArmionGC3",
+        "CYRDialogueBrumaRenodRestfulWatchmanScene",
     ];
 
     static bool Ignored(string path, IDialogResponsesGetter response, IDialogTopicGetter topic, string quest)
@@ -56,10 +60,17 @@ public partial class Program
 
     public static void Main()
     {
-        using var output = new StreamWriter(File.OpenWrite(@"C:\Users\justl\Documents\Missing Voices Report\voices.csv"));
-        output.WriteLine("Path,Quest,FormId,Text,Speakers");
+        using var output = new StreamWriter(File.Create(@"C:\Users\justl\Documents\Missing Voices Report\voices.csv"));
+        output.WriteLine("Path,Quest,FormId,Text");
 
         using var env = GameEnvironment.Typical.Builder<ISkyrimMod, ISkyrimModGetter>(GameRelease.SkyrimSE)
+            .TransformModListings(lo =>
+            {
+                // This is ugly :)
+                return lo.And(new ModListing<ISkyrimModGetter>(SkyrimMod.CreateFromBinaryOverlay(@"C:\Users\justl\AppData\Local\ModOrganizer\Skyrim Special Edition\mods\se-assets\BSAssets.esm", SkyrimRelease.SkyrimSE)))
+                    .And(new ModListing<ISkyrimModGetter>(SkyrimMod.CreateFromBinaryOverlay(@"C:\Users\justl\AppData\Local\ModOrganizer\Skyrim Special Edition\mods\se-heartlands-bruma\BSHeartland.esm", SkyrimRelease.SkyrimSE)))
+                    .And(new ModListing<ISkyrimModGetter>(SkyrimMod.CreateFromBinaryOverlay(@"C:\Users\justl\AppData\Local\ModOrganizer\Skyrim Special Edition\mods\se-heartlands\CYRMoreSilentDialogFixes.esp", SkyrimRelease.SkyrimSE)));
+            })
             .Build();
         var lookup = new VoiceTypeAssetLookup();
         lookup.Prep(env.LinkCache.CreateImmutableAssetLinkCache());
@@ -67,6 +78,7 @@ public partial class Program
         var mod = env.LoadOrder.PriorityOrder.First(l => l.ModKey == Mod).Mod!;
         var responses = mod.EnumerateMajorRecords<IDialogResponsesGetter>()
             .OrderBy(r => r.FormKey);
+        var usageCache = new ImmutableLoadOrderLinkUsageCache(env.LinkCache);
 
         foreach (var response in responses)
         {
@@ -75,14 +87,15 @@ public partial class Program
             var topic = (IDialogTopicGetter)(context.Parent!.Record)!;
             var quest = topic.Quest.Resolve(env.LinkCache).EditorID!;
 
-            foreach (var file in files)
+            var missingFiles = files.Where(f => !Ignored(f.Path, response, topic, quest) && !File.Exists(Path.Join(DataFolderPath, f.Path))).ToArray();
+
+            foreach (var file in missingFiles)
             {
-                if (!Ignored(file.Path, response, topic, quest) && !File.Exists(Path.Join(env.DataFolderPath, file.Path)))
-                {
-                    var id = $"09{response.FormKey.ID:X6}";
-                    var text = string.Join(" ", response.Responses.Select(r => r.Text.String)!);
-                    output.WriteLine($"{file},{quest},{id},\"{text}\",{speakers}");
-                }
+                var voice = env.LinkCache.Resolve<IVoiceTypeGetter>(file.Path.Split('\\')[3]);
+
+                var id = $"09{response.FormKey.ID:X6}";
+                var text = string.Join(" ", response.Responses.Select(r => r.Text.String)!);
+                output.WriteLine($"{file},{quest},{id},\"{text}\"");
             }
         };
     }
