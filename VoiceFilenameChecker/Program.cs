@@ -1,148 +1,78 @@
 using System.Diagnostics;
 using System.Text.RegularExpressions;
 using Mutagen.Bethesda;
+using Mutagen.Bethesda.Assets;
 using Mutagen.Bethesda.Environments;
 using Mutagen.Bethesda.Plugins;
+using Mutagen.Bethesda.Plugins.Assets;
 using Mutagen.Bethesda.Plugins.Cache;
 using Mutagen.Bethesda.Skyrim;
+using Mutagen.Bethesda.Skyrim.Records.Assets.VoiceType;
+using Noggog;
 
 namespace VoiceFilenameChecker;
 
-public static class StringExtensions
-{
-    public static bool StartsWithIgnoreCase(this string source, string target)
-    {
-        return source.StartsWith(target, StringComparison.OrdinalIgnoreCase);
-    }
-}
-
 public partial class Program
 {
-    // TODO: How is length of quest/topic prefix determined?
-    // Allow anything for now but may lead to false negatives
-    [GeneratedRegex(@"(.+\.es[mpl])\\(.+)\\(\w+)_(\w*)_00(\w+)_(\d)\.fuz")]
-    private static partial Regex FuzFileRegex();
+    static readonly ModKey Mod = "BSHeartland.esm";
 
-    class Response
+    static readonly string[] CutVoices = [
+        "CYRR01FemaleOrc",
+        "CYRR01FemaleUniqueArgonian",
+        "CYRR01MaleUniqueDunFrostfireGarridan",
+        "CYRR01FemaleUniqueFrostcragGhost",
+    ];
+
+    static readonly HashSet<string> RevoicedQuests = [
+        "CYRBrumaWatchtowersFF01",
+        "CYRDialogueBrumaWatchtowers",
+    ];
+
+    static bool Ignored(string path, IDialogResponsesGetter response, IDialogTopicGetter topic, string quest)
     {
-        public required FormKey FormKey { get; init; }
-        public required string VoiceType { get; init; }
-        public required string Quest { get; init; }
-        public required string? Topic { get; init; }
-        public required int Index { get; init; }
-
-        public static Response? ParseFileName(string filePath)
+        // Cut voice types
+        foreach (var cut in CutVoices)
         {
-            var match = FuzFileRegex().Match(filePath);
-            if (!match.Success)
-                return null;
-
-            var modKey = ModKey.FromNameAndExtension(match.Groups[1].Value);
-            var voiceType = match.Groups[2].Value;
-            var quest = match.Groups[3].Value;
-            var topicRaw = match.Groups[4].Value;
-            var formId = match.Groups[5].Value;
-            var topic = topicRaw == "" ? null : topicRaw;
-            var index = int.Parse(match.Groups[6].Value);
-
-            var formKey = new FormKey(modKey, uint.Parse(formId, System.Globalization.NumberStyles.HexNumber));
-
-            return new Response()
-            {
-                FormKey = formKey,
-                VoiceType = voiceType,
-                Quest = quest,
-                Topic = topic,
-                Index = index,
-            };
-        }
-    }
-
-    static IEnumerable<string> WalkDirectory(string dir, string baseDir)
-    {
-        foreach (var subdirectory in Directory.GetDirectories(dir))
-        {
-            foreach (var file in WalkDirectory(subdirectory, baseDir))
-                yield return file;
-        }
-        foreach (var file in Directory.GetFiles(dir))
-            yield return Path.GetRelativePath(baseDir, file);
-    }
-
-    static bool Check(string path, Response? response, ILinkCache linkCache)
-    {
-        bool ok = true;
-        if (response == null)
-        {
-            Console.Error.WriteLine($"Bad file name {path}");
-            return false;
+            if (path.Contains(cut))
+                return true;
         }
 
-        //if (linkCache.TryResolve<IVoiceTypeGetter>(response.VoiceType, out var _))
-        //{
-        //    Console.Error.WriteLine($"  Bad voice type {response.VoiceType}");
-        //    ok = false;
-        //}
+        if (RevoicedQuests.Contains(quest))
+            return true;
 
-        if (!linkCache.TryResolveSimpleContext<IDialogResponsesGetter>(response.FormKey, out var responses))
-        {
-            Console.Error.WriteLine($"  No dialogue record");
-            Console.Error.WriteLine($"Above file is {path}");
-            return false;
-        }
-
-        var topic = responses.Parent?.Record as IDialogTopicGetter;
-        Debug.Assert(topic != null);
-        // ResolveContext doesn't account for editor ID changes
-        topic = linkCache.Resolve<IDialogTopicGetter>(topic.FormKey);
-
-        if (topic.EditorID != null && response.Topic != null)
-        {
-            if (!topic.EditorID.StartsWithIgnoreCase(response.Topic))
-            {
-                Console.Error.WriteLine($"  Topic prefix mismatch");
-                ok = false;
-            }
-        }
-        else if ((topic.EditorID == null) != (response.Topic == null))
-        {
-            Console.Error.WriteLine($"  Topic ID is null does not match file topic is null");
-            ok = false;
-        }
-
-        var quest = linkCache.Resolve(topic.Quest);
-
-        if (!quest.EditorID!.StartsWithIgnoreCase(response.Quest))
-        {
-            ok = false;
-            Console.Error.WriteLine($"  Quest prefix mismatch");
-        }
-
-        if (!ok)
-        {
-            Console.Error.WriteLine($"Above file is {path}");
-            Console.Error.WriteLine($"For response {quest.EditorID}_{topic.EditorID}");
-        }
-        return ok;
+        return false;
     }
 
     public static void Main()
     {
+        using var output = new StreamWriter(File.OpenWrite(@"C:\Users\justl\Documents\Missing Voices Report\voices.csv"));
+        output.WriteLine("Path,Quest,FormId,Text");
+
         using var env = GameEnvironment.Typical.Builder<ISkyrimMod, ISkyrimModGetter>(GameRelease.SkyrimSE)
             .Build();
+        var lookup = new VoiceTypeAssetLookup();
+        lookup.Prep(env.LinkCache.CreateImmutableAssetLinkCache());
 
-        var voiceDir = Path.Join(env.DataFolderPath, "Sound/Voice");
+        var mod = env.LoadOrder.PriorityOrder.First(l => l.ModKey == Mod).Mod!;
+        var responses = mod.EnumerateMajorRecords<IDialogResponsesGetter>()
+            .OrderBy(r => r.FormKey);
 
-        uint good = 0;
-        uint bad = 0;
-        foreach (var file in WalkDirectory(voiceDir, voiceDir))
+        foreach (var response in responses)
         {
-            var ok = Check(file, Response.ParseFileName(file), env.LinkCache);
-            if (ok)
-                good++;
-            else
-                bad++;
-        }
-        Console.WriteLine($"{bad}/{good + bad} misnamed files");
+            var files = lookup.GetVoiceLineFilePaths(response).Order();
+            var context = env.LinkCache.ResolveSimpleContext(response);
+            var topic = (IDialogTopicGetter)(context.Parent!.Record)!;
+            var quest = topic.Quest.Resolve(env.LinkCache).EditorID!;
+
+            foreach (var file in files)
+            {
+                if (!Ignored(file.Path, response, topic, quest) && !File.Exists(Path.Join(env.DataFolderPath, file.Path)))
+                {
+                    var id = $"09{response.FormKey.ID:X6}";
+                    var text = string.Join(" ", response.Responses.Select(r => r.Text.String)!);
+                    output.WriteLine($"{file},{quest},{id},\"{text}\"");
+                }
+            }
+        };
     }
 }
