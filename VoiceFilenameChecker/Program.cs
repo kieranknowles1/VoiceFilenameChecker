@@ -17,7 +17,7 @@ namespace VoiceFilenameChecker;
 public partial class Program
 {
     static readonly ModKey Mod = "BSHeartland.esm";
-    static readonly string DataFolderPath = @"C:\Users\justl\AppData\Local\ModOrganizer\Skyrim Special Edition\mods\se-heartlands-bruma";
+    static readonly string DataFolderPath = @"C:\Users\justl\AppData\Local\ModOrganizer\Skyrim Special Edition\mods\se-heartlands";
 
     static readonly string[] CutVoices = [
         "CYRR01FemaleOrc",
@@ -31,12 +31,16 @@ public partial class Program
         "CYRDialogueBrumaWatchtowers",
         "CYRDialogueSnowstoneRestHarsvarCaught",
 
+        // Cut song
+        "CYRBardSongs",
+
         // New guards
         "CYRBrumaFF05",
         "CYRDialogueBrumaSceneArmionGC1",
         "CYRDialogueBrumaSceneArmionGC2",
         "CYRDialogueBrumaSceneArmionGC3",
         "CYRDialogueBrumaRenodRestfulWatchmanScene",
+        "CYRBrumaFF09MemoryGemScene",
     ];
 
     static bool Ignored(string path, IDialogResponsesGetter response, IDialogTopicGetter topic, string quest)
@@ -55,13 +59,17 @@ public partial class Program
         if (response.Conditions.Any(c => c.Data is IGetIsIDConditionDataGetter gisid && gisid.Object.Link.Equals(FormKey.Factory("078185:BSHeartland.esm"))))
             return true;
 
+        // Currently bugged in Mutagen
+        if (quest == "CYRGenericDialogueR01" && response.Conditions.Any(c => c.Data is IGetIsRaceConditionDataGetter && c.Data.RunOnType == Condition.RunOnType.Subject))
+            return true;
+
         return false;
     }
 
     public static void Main()
     {
         using var output = new StreamWriter(File.Create(@"C:\Users\justl\Documents\Missing Voices Report\voices.csv"));
-        output.WriteLine("Path,Quest,FormId,Text");
+        output.WriteLine("Path,Quest,FormId,Text,Speakers");
 
         using var env = GameEnvironment.Typical.Builder<ISkyrimMod, ISkyrimModGetter>(GameRelease.SkyrimSE)
             .TransformModListings(lo =>
@@ -80,14 +88,34 @@ public partial class Program
             .OrderBy(r => r.FormKey);
         var usageCache = new ImmutableLoadOrderLinkUsageCache(env.LinkCache);
 
-        foreach (var response in responses)
+        foreach (var res in responses)
         {
+            var context = env.LinkCache.ResolveSimpleContext(res);
+            var response = context.Record;
+            if (response.IsDeleted)
+                continue;
+
             var files = lookup.GetVoiceLineFilePaths(response).Order();
-            var context = env.LinkCache.ResolveSimpleContext(response);
             var topic = (IDialogTopicGetter)(context.Parent!.Record)!;
             var quest = topic.Quest.Resolve(env.LinkCache).EditorID!;
 
             var missingFiles = files.Where(f => !Ignored(f.Path, response, topic, quest) && !File.Exists(Path.Join(DataFolderPath, f.Path))).ToArray();
+
+            // Quite inefficient, a smart approach would early return
+            var speakers = topic.Subtype == DialogTopic.SubtypeEnum.SharedInfo
+                ? usageCache.GetUsagesOf<IDialogResponsesGetter>(response).UsageLinks
+                .Select(u => u.Resolve(env.LinkCache)).Where(r => r.ResponseData.Equals(response))
+                .SelectMany(lookup.GetSpeakers).Distinct()
+                : lookup.GetSpeakers(response);
+
+            var missingVoices = missingFiles.Select(f => env.LinkCache.Resolve<IVoiceTypeGetter>(f.Path.Split('\\')[3])).Select(v => v.FormKey).ToHashSet();
+            var relevantSpeakers = speakers.Select(s => s.Resolve(env.LinkCache))
+                .Where(s => missingVoices.Contains(s.Voice.FormKey));
+
+            if (!relevantSpeakers.Any())
+                continue;
+
+            var speakerString = string.Join(" ", relevantSpeakers.Select(s => s.EditorID).Order());
 
             foreach (var file in missingFiles)
             {
@@ -95,7 +123,7 @@ public partial class Program
 
                 var id = $"09{response.FormKey.ID:X6}";
                 var text = string.Join(" ", response.Responses.Select(r => r.Text.String)!);
-                output.WriteLine($"{file},{quest},{id},\"{text}\"");
+                output.WriteLine($"{file},{quest},{id},\"{text}\",{speakerString}");
             }
         };
     }
